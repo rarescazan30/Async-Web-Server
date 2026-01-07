@@ -92,7 +92,10 @@ struct connection *connection_create(int sockfd)
 	new_conn->sockfd = sockfd;
 	new_conn->fd = -1;
 	new_conn->state = STATE_INITIAL;
-	
+	new_conn->eventfd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+
+	int rc = w_epoll_add_ptr_in(epollfd, new_conn->eventfd, new_conn);
+
 	return new_conn;
 }
 
@@ -101,15 +104,40 @@ void connection_start_async_io(struct connection *conn)
 	/* TODO: Start asynchronous operation (read from file).
 	 * Use io_submit(2) & friends for reading data asynchronously.
 	 */
+	memset(&conn->iocb, 0, sizeof(conn->iocb));
+	size_t to_read_bytes = BUFSIZ;
+	if (conn->file_pos + to_read_bytes > conn->file_size)
+		to_read_bytes = conn->file_size - conn->file_pos;
+
+	io_prep_pread(&conn->iocb, conn->fd, conn->send_buffer, to_read_bytes, conn->file_pos);
+	io_set_eventfd(&conn->iocb, conn->eventfd);
+	conn->iocb.data = conn;
+	conn->piocb[0] = &conn->iocb;
+
+	int rc = io_submit(ctx, 1, conn->piocb);
+	if (rc < 0) {
+		conn->state = STATE_CONNECTION_CLOSED;
+		return;
+	}
+	conn->state = STATE_ASYNC_ONGOING;
+	w_epoll_update_ptr_in(epollfd, conn->sockfd, conn);
+
 }
 
 void connection_remove(struct connection *conn)
 {
 	/* TODO: Remove connection handler. */
-	w_epoll_remove_ptr(epollfd, conn->sockfd, conn);
-	close(conn->sockfd);
+	if (conn->sockfd) {
+		w_epoll_remove_ptr(epollfd, conn->sockfd, conn);
+		close(conn->sockfd);
+	}
+	if (conn->eventfd >= 0) {
+		w_epoll_remove_ptr(epollfd, conn->eventfd, conn);
+		close(conn->eventfd);
+	}
 	if (conn->fd >= 0)
 		close(conn->fd);
+	
 	free(conn);
 }
 
@@ -148,27 +176,29 @@ void receive_data(struct connection *conn)
 	/* TODO: Receive message on socket.
 	 * Store message in recv_buffer in struct connection.
 	 */
-
-	if (conn->recv_len >= BUFSIZ - 1)
+	while (1) {
+		if (conn->recv_len >= BUFSIZ - 1)
         return;
 	
 
-	size_t read_size = BUFSIZ - conn->recv_len;
+		size_t read_size = BUFSIZ - conn->recv_len;
 
-	ssize_t recv_size = recv(conn->sockfd, conn->recv_buffer + conn->recv_len, read_size, 0);
+		ssize_t recv_size = recv(conn->sockfd, conn->recv_buffer + conn->recv_len, read_size, 0);
 
-	if (recv_size < 0) {
-		if (errno == EAGAIN || errno == EWOULDBLOCK)
+		if (recv_size < 0) {
+			if (errno == EAGAIN || errno == EWOULDBLOCK)
+				break;
+			conn->state = STATE_CONNECTION_CLOSED;
 			return;
-		conn->state = STATE_CONNECTION_CLOSED;
-		return;
-	}
+		}
 
-	if (recv_size == 0) {
-		conn->state = STATE_CONNECTION_CLOSED;
-		return;
+		if (recv_size == 0) {
+			conn->state = STATE_CONNECTION_CLOSED;
+			return;
+		}
+		conn->recv_len += recv_size;
 	}
-	conn->recv_len += recv_size;
+	
 	conn->recv_buffer[conn->recv_len] = '\0';
 	conn->state = STATE_RECEIVING_DATA;
 	
@@ -203,6 +233,19 @@ void connection_complete_async_io(struct connection *conn)
 	/* TODO: Complete asynchronous operation; operation returns successfully.
 	 * Prepare socket for sending.
 	 */
+	struct io_event events[1];
+	struct timespec timeout = {0, 0};
+
+	int rc = io_getevents(ctx, 1, 1, events, &timeout);
+
+	if (rc > 0) {
+		conn->send_len = events[0].res;
+		conn->send_pos = 0;
+		conn->file_pos += conn->send_len;
+		conn->state = STATE_SENDING_DATA;
+		w_epoll_update_ptr_inout(epollfd, conn->sockfd, conn);
+	} else
+		conn->state = STATE_CONNECTION_CLOSED;
 }
 
 int parse_header(struct connection *conn)
@@ -249,25 +292,24 @@ int parse_header(struct connection *conn)
 enum connection_state connection_send_static(struct connection *conn)
 {
 	/* TODO: Send static data using sendfile(2). */
-	off_t offset = conn->file_pos;
-	size_t to_send_bytes = conn->file_size - conn->file_pos;
+	while (conn->file_pos < conn->file_size) {
+		off_t offset = conn->file_pos;
+		size_t to_send_bytes = conn->file_size - conn->file_pos;
 
-	ssize_t sent_bytes = sendfile(conn->sockfd, conn->fd, &offset, to_send_bytes);
+		ssize_t sent_bytes = sendfile(conn->sockfd, conn->fd, &offset, to_send_bytes);
 
-	if (sent_bytes < 0) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            w_epoll_update_ptr_inout(epollfd, conn->sockfd, conn);
-            return STATE_SENDING_DATA;
-        }
-        return STATE_CONNECTION_CLOSED;
-    }
+		if (sent_bytes < 0) {
+			if (errno == EAGAIN || errno == EWOULDBLOCK) {
+				w_epoll_update_ptr_inout(epollfd, conn->sockfd, conn);
+				return STATE_SENDING_DATA;
+			}
+			return STATE_CONNECTION_CLOSED;
+		}
+		conn->file_pos += sent_bytes;
+			
+	}
 	
-	conn->file_pos += sent_bytes;
-	if (conn->file_pos >= conn->file_size)
-		return STATE_DATA_SENT;
-	
-	w_epoll_update_ptr_inout(epollfd, conn->sockfd, conn);
-	return STATE_SENDING_DATA;
+	return STATE_DATA_SENT;
 }
 
 int connection_send_data(struct connection *conn)
@@ -276,19 +318,19 @@ int connection_send_data(struct connection *conn)
 	/* TODO: Send as much data as possible from the connection send buffer.
 	 * Returns the number of bytes sent or -1 if an error occurred
 	 */
-	size_t to_send_bytes = conn->send_len - conn->send_pos;
-	ssize_t sent_bytes = send(conn->sockfd, conn->send_buffer + conn->send_pos, to_send_bytes, 0);
-	if (sent_bytes < 0) {
-		if (errno == EAGAIN || errno == EWOULDBLOCK)
-			return 1;
-		return -1;
+	while (conn->send_pos < conn->send_len) {
+		size_t to_send_bytes = conn->send_len - conn->send_pos;
+		ssize_t sent_bytes = send(conn->sockfd, conn->send_buffer + conn->send_pos, to_send_bytes, 0);
+		if (sent_bytes < 0) {
+			if (errno == EAGAIN || errno == EWOULDBLOCK)
+				return 1;
+			return -1;
+		}
+		conn->send_pos += sent_bytes;
 	}
-		
-	conn->send_pos += sent_bytes;
-	if (conn->send_pos == conn->send_len)
-		return 0;
-
-	return 1;
+	conn->send_pos = 0;
+	conn->send_len = 0;
+	return 0;
 }
 
 
@@ -297,6 +339,19 @@ int connection_send_dynamic(struct connection *conn)
 	/* TODO: Read data asynchronously.
 	 * Returns 0 on success and -1 on error.
 	 */
+	if (conn->state == STATE_ASYNC_ONGOING)
+		return STATE_ASYNC_ONGOING;
+
+	if (conn->state == STATE_SENDING_DATA) {
+		int rc = connection_send_data(conn);
+		if (rc < 0)
+			return STATE_CONNECTION_CLOSED;
+		if (rc == 1)
+			return STATE_SENDING_DATA;
+
+		conn->send_len = 0;
+	}
+
 	if (conn->file_pos >= conn->file_size)
 		return STATE_DATA_SENT;
 	connection_start_async_io(conn);
@@ -382,6 +437,10 @@ void handle_output(struct connection *conn)
 		}
 		break;
 	}
+	case STATE_ASYNC_ONGOING:
+	{
+		break;
+	}
 	case STATE_CONNECTION_CLOSED:
 	{
 
@@ -432,8 +491,16 @@ int main(void)
 		else {
 			struct connection *new_conn = rev.data.ptr;
 
-			if (rev.events & EPOLLIN)
-				handle_input(new_conn);
+			if (rev.events & EPOLLIN){
+				uint64_t val;
+				ssize_t rc = read(new_conn->eventfd, &val, 8);
+				if (rc == 8) {
+					connection_complete_async_io(new_conn);
+					handle_output(new_conn);
+				} else 
+					handle_input(new_conn);
+			}
+		
 			if (rev.events & EPOLLOUT)
 				handle_output(new_conn);
 
