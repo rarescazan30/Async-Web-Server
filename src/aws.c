@@ -47,11 +47,12 @@ static void connection_prepare_send_reply_header(struct connection *conn)
 	/* TODO: Prepare the connection buffer to send the reply header. */
 	// checker only checks http and 200 code
 	// but it's good practice to print the whole message
-	sprintf(conn->send_buffer, BUFSIZ, "HTTP/1.1 200 OK\r\n"
-                "Connection: close\r\n"
-                "Content-Length: %zu\r\n"
-                "\r\n",
-                conn->file_size);
+	int n = snprintf(conn->send_buffer, BUFSIZ,
+                 "HTTP/1.1 200 OK\r\n"
+                 "Connection: close\r\n"
+                 "Content-Length: %zu\r\n"
+                 "\r\n",
+                 conn->file_size);
 	conn->send_len = strlen(conn->send_buffer);
 	conn->send_pos = 0;
 }
