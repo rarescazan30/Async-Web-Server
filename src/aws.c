@@ -415,10 +415,10 @@ void handle_output(struct connection *conn)
 	}
 	case STATE_SENDING_404:
 	{
-		if (conn->send_pos == 0 && conn->send_len == 0)
-			connection_prepare_send_404(conn);
+		// if (conn->send_pos == 0 && conn->send_len == 0)
+		connection_prepare_send_404(conn);
 		rc = connection_send_data(conn);
-		if (rc <= 0)
+		if (rc != 1)
 			conn->state = STATE_CONNECTION_CLOSED;
 		break;
 	}
