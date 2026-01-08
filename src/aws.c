@@ -221,14 +221,6 @@ int connection_open_file(struct connection *conn)
 		conn->state = STATE_SENDING_404;
 		return -1;
 	}
-	// if it's a register we close and return an error since we open files not registers
-	// this helps me pass one extra test
-	if (!S_ISREG(st.st_mode)) {
-        close(conn->fd);
-        conn->fd = -1;
-        conn->state = STATE_SENDING_404;
-        return -1;
-    }
 
 	conn->file_size = st.st_size;
 	conn->file_pos = 0;
