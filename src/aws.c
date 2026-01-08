@@ -164,6 +164,7 @@ void handle_new_connection(void)
 	
 	/* TODO: Add socket to epoll. */
 	int rc = w_epoll_add_ptr_in(epollfd, fd, new_conn);
+	DIE(rc < 0, "w_epoll_add_ptr_in");
 	/* TODO: Initialize HTTP_REQUEST parser. */
 	http_parser_init(&new_conn->request_parser, HTTP_REQUEST);
 	new_conn->request_parser.data = new_conn;
