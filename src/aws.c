@@ -62,6 +62,7 @@ static void connection_prepare_send_404(struct connection *conn)
 	// checker only checks http and 200 code
 	// but it's good practice to print the whole message
 	sprintf(conn->send_buffer, "HTTP/1.1 404 Not Found\r\n"
+			"Date: Tue, 06 Jan 2026 21:09:00 GMT\r\n"
             "Connection: close\r\n"
             "Content-Length: 0\r\n"
             "\r\n");
@@ -149,6 +150,8 @@ void handle_new_connection(void)
 
 	/* TODO: Accept new connection. */
 	int fd = accept(listenfd, (SSA *) &addr, &addrlen);
+	if (fd < 0)
+		return;
 	/* TODO: Set socket to be non-blocking. */
 	// get initial flags
 	int flags = fcntl(fd, F_GETFL, 0);
