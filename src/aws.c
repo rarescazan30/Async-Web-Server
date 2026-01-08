@@ -223,6 +223,13 @@ int connection_open_file(struct connection *conn)
 		return -1;
 	}
 
+	if (!S_ISREG(st.st_mode)) {
+        close(conn->fd);
+        conn->fd = -1;
+        conn->state = STATE_SENDING_404;
+        return -1;
+    }
+
 	conn->file_size = st.st_size;
 	conn->file_pos = 0;
 	return 0;
@@ -424,6 +431,9 @@ void handle_output(struct connection *conn)
 	{
 		// if (conn->send_pos == 0 && conn->send_len == 0)
 		//connection_prepare_send_404(conn);
+		if (conn->send_len == 0)
+			connection_prepare_send_404(conn);
+
 		rc = connection_send_data(conn);
 		if (rc != 1)
 			conn->state = STATE_CONNECTION_CLOSED;
@@ -484,8 +494,6 @@ int main(void)
 	/* server main loop */
 	while (1) {
 		struct epoll_event rev;
-		
-
 
 		/* TODO: Wait for events. */
 		w_epoll_wait_infinite(epollfd, &rev);
