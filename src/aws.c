@@ -284,9 +284,10 @@ int parse_header(struct connection *conn)
 			connection_prepare_send_404(conn);
 			return 0;
     	}
-		if (connection_open_file(conn) == -1)
+		if (connection_open_file(conn) == -1) {
 			conn->state = STATE_SENDING_404;
 			connection_prepare_send_404(conn);
+		}
 		else {
 			conn->state = STATE_SENDING_HEADER;
 			connection_prepare_send_reply_header(conn);
