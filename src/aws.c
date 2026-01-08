@@ -506,7 +506,8 @@ int main(void)
 			if (rev.events & EPOLLIN){
 				uint64_t val;
 				ssize_t rc = read(new_conn->eventfd, &val, 8);
-				if (rc > 0) {
+				// we read exactly how much we need, not >0!
+				if (rc == 8) {
 					connection_complete_async_io(new_conn);
 					handle_output(new_conn);
 				} else 
