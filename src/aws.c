@@ -279,8 +279,14 @@ int parse_header(struct connection *conn)
 	if (conn->have_path) {
 		conn->res_type = connection_get_resource_type(conn);
 
+		if (conn->res_type == RESOURCE_TYPE_NONE) {
+			conn->state = STATE_SENDING_404;
+			connection_prepare_send_404(conn);
+			return 0;
+    	}
 		if (connection_open_file(conn) == -1)
 			conn->state = STATE_SENDING_404;
+			connection_prepare_send_404(conn);
 		else {
 			conn->state = STATE_SENDING_HEADER;
 			connection_prepare_send_reply_header(conn);
@@ -416,7 +422,7 @@ void handle_output(struct connection *conn)
 	case STATE_SENDING_404:
 	{
 		// if (conn->send_pos == 0 && conn->send_len == 0)
-		connection_prepare_send_404(conn);
+		//connection_prepare_send_404(conn);
 		rc = connection_send_data(conn);
 		if (rc != 1)
 			conn->state = STATE_CONNECTION_CLOSED;
